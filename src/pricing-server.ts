@@ -30,29 +30,22 @@ interface ReferenceCurrenciesResponse {
   };
 }
 
-interface BinanceP2PResponse {
-  data: Array<{
-    adv: {
-      price: string;
-    };
-  }>;
-}
-
-interface BinanceP2PPrice {
-  min: number;
-  median: number;
-  max: number;
-}
-
-// Currency and Coin UUIDs (to be populated dynamically)
+// Currency and Coin UUIDs from .env
 const currencyUuids: Record<string, string> = {
   USD: 'yhjMzLPhuIDl',
-  // Add more dynamically from /reference-currencies
+  COP: process.env.CR_COP_UUID || 'Y7N-jnLhqYiW',
+  NGN: process.env.CR_NGN_UUID || 'znnRJjGM4nVb',
+  VES: 'not_present', // VES not available in Coinranking, using hardcoded value
+  EUR: '5k-_VTxqtCEI',
 };
+
 const coinUuids: Record<string, string> = {
-  USDC: 'razxDUgYGNAdQ',
-  // Add more as needed
+  USDC: process.env.CR_USDC_UUID || 'aKzUVe4Hh_CON',
+  USD: 'yhjMzLPhuIDl', // For USD-to-fiat conversions
 };
+
+// Hardcoded VES/USD rate from .env
+const hardcodedVesUsd = parseFloat(process.env.HARDCODED_VES_USD || '106');
 
 // Connect to Redis
 async function connectRedis(): Promise<void> {
@@ -78,38 +71,23 @@ async function fetchReferenceCurrencies(): Promise<void> {
     currencies.forEach((currency) => {
       currencyUuids[currency.symbol] = currency.uuid;
     });
-    await client.set('reference-currencies', JSON.stringify(currencyUuids), { EX: 30 * 24 * 60 * 60 }); // Cache for 30 days
-    console.log('Reference currencies fetched and cached');
+    await client.set('reference-currencies', JSON.stringify(currencyUuids), { EX: 30 * 24 * 60 * 60 });
+    console.log('Reference currencies fetched and cached:', currencyUuids);
   } catch (error) {
     console.error('Error fetching reference currencies:', error);
   }
 }
 
-// Price fetching functions
+// Fetch price from Coinranking
 async function fetchCoinrankingPrice(token: string, fiat: string): Promise<CoinrankingPriceResponse['data']> {
+  const fiatUuid = currencyUuids[fiat] || currencyUuids['USD'];
   const url = `https://api.coinranking.com/v2/coin/${coinUuids[token]}/price`;
   const response = await axios.get<CoinrankingPriceResponse>(url, {
     headers: { 'x-access-token': process.env.COINRANKING_API_KEY },
-    params: { referenceCurrencyUuid: currencyUuids[fiat] },
+    params: { referenceCurrencyUuid: fiatUuid },
   });
+  console.log(`Coinranking response for ${token}/${fiat} (UUID: ${fiatUuid}):`, response.data);
   return response.data.data;
-}
-
-async function fetchBinanceP2PPrice(token: string, fiat: string, type: 'BUY' | 'SELL'): Promise<BinanceP2PPrice> {
-  const response = await axios.post<BinanceP2PResponse>(process.env.BINANCE_API_URL as string, {
-    fiat,
-    page: 1,
-    rows: 10,
-    asset: token,
-    tradeType: type,
-    searchType: 'FAST',
-  });
-  const prices = response.data.data.map((ad) => parseFloat(ad.adv.price)).sort((a, b) => a - b);
-  return {
-    min: prices[0],
-    median: prices[Math.floor(prices.length / 2)],
-    max: prices[prices.length - 1],
-  };
 }
 
 // Cache helpers
@@ -129,24 +107,29 @@ async function refreshPrices(): Promise<void> {
     const tokens = ['USDC'];
     const fiats = ['USD', 'COP', 'EUR', 'NGN', 'VES'];
 
-    // Check remaining API calls (pseudo-code; implement based on dashboard or tracking)
     const callsRemaining = await getRemainingAPICalls();
-    if (callsRemaining < tokens.length * (fiats.length - 2)) { // -2 for NGN, VES (Binance)
+    if (callsRemaining < tokens.length * fiats.length) {
       console.warn('Approaching API limit, skipping Coinranking fetch');
       return;
     }
 
     for (const token of tokens) {
       for (const fiat of fiats) {
-        if (['NGN', 'VES'].includes(fiat)) {
-          for (const type of ['BUY', 'SELL'] as const) {
-            const prices = await fetchBinanceP2PPrice(token, fiat, type);
-            await setPrice(`price:${token}:${fiat}:${type}`, prices);
-          }
+        const key = `price:${token}:${fiat}`;
+        let data: any;
+
+        if (fiat === 'VES') {
+          // Use hardcoded VES/USD rate
+          const usdcUsd = await fetchCoinrankingPrice(token, 'USD');
+          data = {
+            price: (parseFloat(usdcUsd.price) * hardcodedVesUsd).toString(),
+            timestamp: usdcUsd.timestamp,
+          };
         } else {
-          const data = await fetchCoinrankingPrice(token, fiat);
-          await setPrice(`price:${token}:${fiat}`, { price: data.price, timestamp: data.timestamp });
+          data = await fetchCoinrankingPrice(token, fiat);
         }
+
+        await setPrice(key, data);
       }
     }
     console.log('Prices refreshed');
@@ -157,11 +140,9 @@ async function refreshPrices(): Promise<void> {
 
 // API endpoint
 app.get('/price', async (req: Request, res: Response): Promise<void> => {
-  const { token, fiat, source = 'coinranking', type } = req.query as {
+  const { token, fiat } = req.query as {
     token?: string;
     fiat?: string;
-    source?: string;
-    type?: string;
   };
 
   if (!token || !fiat) {
@@ -170,26 +151,23 @@ app.get('/price', async (req: Request, res: Response): Promise<void> => {
   }
 
   try {
-    let key: string, data: any;
-    if (source === 'binance' || ['NGN', 'VES'].includes(fiat)) {
-      if (!type) {
-        res.status(400).json({ status: 'error', message: 'Type (BUY/SELL) required for Binance' });
-        return;
-      }
-      key = `price:${token}:${fiat}:${type}`;
-      data = await getPrice(key);
-      if (!data) {
-        data = await fetchBinanceP2PPrice(token, fiat, type as 'BUY' | 'SELL');
-        await setPrice(key, data);
-      }
-    } else {
-      key = `price:${token}:${fiat}`;
-      data = await getPrice(key);
-      if (!data) {
+    const key = `price:${token}:${fiat}`;
+    let data = await getPrice(key);
+
+    if (!data) {
+      if (fiat === 'VES') {
+        // Use hardcoded VES/USD rate
+        const usdcUsd = await fetchCoinrankingPrice(token, 'USD');
+        data = {
+          price: (parseFloat(usdcUsd.price) * hardcodedVesUsd).toString(),
+          timestamp: usdcUsd.timestamp,
+        };
+      } else {
         data = await fetchCoinrankingPrice(token, fiat);
-        await setPrice(key, data);
       }
+      await setPrice(key, data);
     }
+
     res.json({ status: 'success', data });
   } catch (error) {
     console.error('Error fetching price:', error);
