@@ -1,4 +1,4 @@
-# LocalSolana Pricing Server
+# YapBay & LocalSolana Pricing Server
 
 A lightweight Express.js server that provides cryptocurrency price feeds with support for multiple fiat currencies. The server caches prices using Redis and updates them periodically via the Coinranking API.
 
