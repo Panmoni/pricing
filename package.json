@@ -4,9 +4,15 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start-redis": "podman run -d --name redis --pod pricing -v ~/redis-data:/data docker.io/library/redis:latest",
+    "build-image": "podman build -f Containerfile -t yapbay-pricing .",
+    "create-pod": "podman pod exists pricing || podman pod create --name pricing -p 6379:6379 -p 4000:4000",
+    "start-redis": "podman container exists redis || podman run -d --name redis --pod pricing -v ~/redis-data:/data docker.io/library/redis:latest",
+    "start-server": "podman container exists pricing-server || podman run -d --name pricing-server --pod pricing --mount type=bind,source=.env,target=/app/.env,ro yapbay-pricing",
     "start": "ts-node src/pricing-server.ts",
-    "dev": "npm run start-redis && npm start"
+    "dev": "npm run build-image && npm run create-pod && npm run start-redis && npm run start-server",
+    "stop-pod": "podman pod stop pricing",
+    "logs-server": "podman logs -f pricing-server",
+    "clean-pod": "podman pod stop pricing && podman pod rm -f pricing"
   },
   "keywords": [],
   "author": "",

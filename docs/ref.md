@@ -1,5 +1,7 @@
 # Ref
 
+npm run dev starts it all from scratch
+
 ## Price API
 
 curl http://localhost:4000/price?token=USDC&fiat=USD
