@@ -10,6 +10,9 @@ curl http://localhost:4000/price?token=USDC&fiat=NGN
 curl http://localhost:4000/price?token=USDC&fiat=VES
 
 ## CoinRanking
+
+curl http://localhost:4000/api-usage
+
 ### USDC Price in USD
 ❯ curl -H "x-access-token: x" "https://api.coinranking.com/v2/coin/aKzUVe4Hh_CON/price" | jq '.'
 
