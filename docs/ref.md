@@ -9,6 +9,9 @@ curl http://localhost:4000/price?token=USDC&fiat=COP
 curl http://localhost:4000/price?token=USDC&fiat=NGN
 curl http://localhost:4000/price?token=USDC&fiat=VES
 
+## Monitor Dolar
+https://monitordolarvenezuela.com/api-dolar-venezuela
+
 ## CoinRanking
 
 curl http://localhost:4000/api-usage
