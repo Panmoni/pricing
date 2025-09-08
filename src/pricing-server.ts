@@ -68,7 +68,7 @@ async function fetchReferenceCurrencies(): Promise<void> {
       }
     );
     const currencies = response.data.data.currencies;
-    currencies.forEach((currency) => {
+    currencies.forEach((currency: { symbol: string; uuid: string }) => {
       currencyUuids[currency.symbol] = currency.uuid;
     });
     await client.set('reference-currencies', JSON.stringify(currencyUuids), { EX: 30 * 24 * 60 * 60 });
@@ -78,14 +78,24 @@ async function fetchReferenceCurrencies(): Promise<void> {
   }
 }
 
-// Fetch price from Coinranking
+// Fetch price from Coinranking with rate limiting
 async function fetchCoinrankingPrice(token: string, fiat: string): Promise<CoinrankingPriceResponse['data']> {
+  // Check if we have remaining API calls
+  const remaining = await getRemainingAPICalls();
+  if (remaining <= 0) {
+    throw new Error('Monthly API limit reached. Please try again next month.');
+  }
+
   const fiatUuid = currencyUuids[fiat] || currencyUuids['USD'];
   const url = `https://api.coinranking.com/v2/coin/${coinUuids[token]}/price`;
   const response = await axios.get<CoinrankingPriceResponse>(url, {
     headers: { 'x-access-token': process.env.COINRANKING_API_KEY },
     params: { referenceCurrencyUuid: fiatUuid },
   });
+  
+  // Track this API call
+  await incrementAPICalls();
+  
   console.log(`Coinranking response for ${token}/${fiat} (UUID: ${fiatUuid}):`, response.data);
   return response.data.data;
 }
@@ -96,7 +106,7 @@ async function getPrice(key: string): Promise<any> {
   return cached ? JSON.parse(cached) : null;
 }
 
-async function setPrice(key: string, value: any, ttl: number = 900): Promise<void> {
+async function setPrice(key: string, value: any, ttl: number = 3600): Promise<void> {
   await client.setEx(key, ttl, JSON.stringify(value));
 }
 
@@ -175,9 +185,50 @@ app.get('/price', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// Placeholder for API call tracking
+// API usage monitoring endpoint
+app.get('/api-usage', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const used = await getMonthlyAPICalls();
+    const remaining = await getRemainingAPICalls();
+    res.json({
+      status: 'success',
+      data: {
+        used,
+        remaining,
+        limit: MONTHLY_API_LIMIT,
+        percentage: Math.round((used / MONTHLY_API_LIMIT) * 100)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching API usage:', error);
+    res.status(500).json({ status: 'error', message: 'Failed to fetch API usage' });
+  }
+});
+
+// API call tracking and rate limiting
+const MONTHLY_API_LIMIT = 3000;
+const API_USAGE_KEY = 'api-usage-monthly';
+
+async function getMonthlyAPICalls(): Promise<number> {
+  const usage = await client.get(API_USAGE_KEY);
+  return usage ? parseInt(usage, 10) : 0;
+}
+
+async function incrementAPICalls(): Promise<void> {
+  const currentUsage = await getMonthlyAPICalls();
+  const newUsage = currentUsage + 1;
+  
+  // Set expiration to end of current month (roughly 30 days)
+  const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+  const secondsUntilMonthEnd = daysInMonth * 24 * 60 * 60;
+  
+  await client.setEx(API_USAGE_KEY, secondsUntilMonthEnd, newUsage.toString());
+  console.log(`API calls this month: ${newUsage}/${MONTHLY_API_LIMIT}`);
+}
+
 async function getRemainingAPICalls(): Promise<number> {
-  return 5000; // Replace with actual logic
+  const used = await getMonthlyAPICalls();
+  return Math.max(0, MONTHLY_API_LIMIT - used);
 }
 
 // Start server and cron
@@ -190,7 +241,7 @@ async function startServer(): Promise<void> {
   app.listen(port, () => {
     console.log(`Pricing server running on port ${port}`);
     refreshPrices(); // Initial fetch
-    cron.schedule('*/15 * * * *', refreshPrices); // Every 15 minutes
+    cron.schedule('0 * * * *', refreshPrices); // Every hour
   });
 }
 
