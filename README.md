@@ -2,6 +2,8 @@
 
 A lightweight Express.js server that provides cryptocurrency price feeds with support for multiple fiat currencies. The server caches prices using Redis and updates them periodically via the Coinranking API.
 
+The primary repo for this project is at: [https://github.com/Panmoni/yapbay](https://github.com/Panmoni/yapbay).
+
 ## Features
 
 - Real-time USDC pricing in multiple currencies (USD, EUR, COP, NGN, VES)
