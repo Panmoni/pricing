@@ -86,8 +86,17 @@ async function fetchCoinrankingPrice(token: string, fiat: string): Promise<Coinr
     throw new Error('Monthly API limit reached. Please try again next month.');
   }
 
+  // Additional safety check - don't make calls if we're very close to the limit
+  if (remaining <= 10) {
+    console.warn(`Only ${remaining} API calls remaining this month. Skipping ${token}/${fiat} fetch.`);
+    throw new Error(`Only ${remaining} API calls remaining this month.`);
+  }
+
   const fiatUuid = currencyUuids[fiat] || currencyUuids['USD'];
   const url = `https://api.coinranking.com/v2/coin/${coinUuids[token]}/price`;
+  
+  console.log(`Making API call for ${token}/${fiat} (${remaining} calls remaining)`);
+  
   const response = await axios.get<CoinrankingPriceResponse>(url, {
     headers: { 'x-access-token': process.env.COINRANKING_API_KEY },
     params: { referenceCurrencyUuid: fiatUuid },
@@ -118,31 +127,52 @@ async function refreshPrices(): Promise<void> {
     const fiats = ['USD', 'COP', 'EUR', 'NGN', 'VES'];
 
     const callsRemaining = await getRemainingAPICalls();
-    if (callsRemaining < tokens.length * fiats.length) {
-      console.warn('Approaching API limit, skipping Coinranking fetch');
+    const requiredCalls = tokens.length * fiats.length;
+    
+    console.log(`API calls remaining: ${callsRemaining}, required for refresh: ${requiredCalls}`);
+    
+    if (callsRemaining < requiredCalls) {
+      console.warn(`Insufficient API calls remaining (${callsRemaining}/${requiredCalls}). Skipping price refresh.`);
       return;
     }
+
+    // Check if we have recent cached data to avoid unnecessary API calls
+    const cacheAgeThreshold = 30 * 60; // 30 minutes in seconds
+    let apiCallsMade = 0;
 
     for (const token of tokens) {
       for (const fiat of fiats) {
         const key = `price:${token}:${fiat}`;
+        
+        // Check if we have recent cached data
+        const cachedData = await getPrice(key);
+        if (cachedData && cachedData.timestamp) {
+          const ageSeconds = (Date.now() / 1000) - cachedData.timestamp;
+          if (ageSeconds < cacheAgeThreshold) {
+            console.log(`Skipping ${token}/${fiat} - recent cache available (${Math.floor(ageSeconds/60)} minutes old)`);
+            continue;
+          }
+        }
+
         let data: any;
 
         if (fiat === 'VES') {
-          // Use hardcoded VES/USD rate
+          // Use hardcoded VES/USD rate - only need USD price
           const usdcUsd = await fetchCoinrankingPrice(token, 'USD');
           data = {
             price: (parseFloat(usdcUsd.price) * hardcodedVesUsd).toString(),
             timestamp: usdcUsd.timestamp,
           };
+          apiCallsMade++;
         } else {
           data = await fetchCoinrankingPrice(token, fiat);
+          apiCallsMade++;
         }
 
         await setPrice(key, data);
       }
     }
-    console.log('Prices refreshed');
+    console.log(`Prices refreshed. API calls made: ${apiCallsMade}`);
   } catch (error) {
     console.error('Error refreshing prices:', error);
   }
@@ -208,21 +238,60 @@ app.get('/api-usage', async (req: Request, res: Response): Promise<void> => {
 // API call tracking and rate limiting
 const MONTHLY_API_LIMIT = 3000;
 const API_USAGE_KEY = 'api-usage-monthly';
+const API_MONTH_KEY = 'api-usage-month';
+
+// Helper function to get current month identifier (YYYY-MM format)
+function getCurrentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Helper function to calculate seconds until next month starts
+function getSecondsUntilNextMonth(): number {
+  const now = new Date();
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const diffMs = nextMonth.getTime() - now.getTime();
+  return Math.floor(diffMs / 1000);
+}
+
+// Check if we need to reset the counter due to month change
+async function checkAndResetMonthlyCounter(): Promise<void> {
+  const currentMonth = getCurrentMonth();
+  const storedMonth = await client.get(API_MONTH_KEY);
+  
+  if (storedMonth !== currentMonth) {
+    console.log(`Month changed from ${storedMonth} to ${currentMonth}. Resetting API counter.`);
+    await client.del(API_USAGE_KEY);
+    await client.set(API_MONTH_KEY, currentMonth);
+    console.log('API usage counter reset for new month');
+  }
+}
 
 async function getMonthlyAPICalls(): Promise<number> {
+  // Check for month change first
+  await checkAndResetMonthlyCounter();
+  
   const usage = await client.get(API_USAGE_KEY);
   return usage ? parseInt(usage, 10) : 0;
 }
 
 async function incrementAPICalls(): Promise<void> {
+  // Check for month change first
+  await checkAndResetMonthlyCounter();
+  
   const currentUsage = await getMonthlyAPICalls();
   const newUsage = currentUsage + 1;
   
-  // Set expiration to end of current month (roughly 30 days)
-  const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
-  const secondsUntilMonthEnd = daysInMonth * 24 * 60 * 60;
+  // Only set TTL if this is the first call of the month
+  if (currentUsage === 0) {
+    const secondsUntilNextMonth = getSecondsUntilNextMonth();
+    await client.setEx(API_USAGE_KEY, secondsUntilNextMonth, newUsage.toString());
+    console.log(`API counter initialized for month ${getCurrentMonth()}, expires in ${Math.floor(secondsUntilNextMonth / 86400)} days`);
+  } else {
+    // Just increment the counter without changing TTL
+    await client.set(API_USAGE_KEY, newUsage.toString());
+  }
   
-  await client.setEx(API_USAGE_KEY, secondsUntilMonthEnd, newUsage.toString());
   console.log(`API calls this month: ${newUsage}/${MONTHLY_API_LIMIT}`);
 }
 
