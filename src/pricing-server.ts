@@ -8,6 +8,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
+app.use(express.json()); // Parse JSON request bodies
 const port: number = parseInt(process.env.PORT || '4000', 10);
 const client: RedisClientType = createClient({ url: process.env.REDIS_URL });
 
@@ -235,8 +236,36 @@ app.get('/api-usage', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
+// Manual API counter reset endpoint (for syncing with Coinranking dashboard)
+app.post('/api-usage/reset', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { value } = req.body as { value?: number };
+    const resetValue = value !== undefined ? value : 0;
+    
+    await client.set(API_USAGE_KEY, resetValue.toString());
+    const currentMonth = getCurrentMonth();
+    await client.set(API_MONTH_KEY, currentMonth);
+    
+    console.log(`API counter manually reset to ${resetValue} for month ${currentMonth}`);
+    
+    res.json({
+      status: 'success',
+      message: `API counter reset to ${resetValue}`,
+      data: {
+        used: resetValue,
+        remaining: MONTHLY_API_LIMIT - resetValue,
+        limit: MONTHLY_API_LIMIT,
+        month: currentMonth
+      }
+    });
+  } catch (error) {
+    console.error('Error resetting API usage:', error);
+    res.status(500).json({ status: 'error', message: 'Failed to reset API usage' });
+  }
+});
+
 // API call tracking and rate limiting
-const MONTHLY_API_LIMIT = 3000;
+const MONTHLY_API_LIMIT = parseInt(process.env.MONTHLY_API_LIMIT || '3000', 10);
 const API_USAGE_KEY = 'api-usage-monthly';
 const API_MONTH_KEY = 'api-usage-month';
 
