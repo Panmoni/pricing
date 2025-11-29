@@ -1,5 +1,7 @@
 # Ref
 
+pending deployment of latest update to api rate limiting management
+
 npm run dev starts it all from scratch
 
 ## Price API
@@ -16,6 +18,25 @@ https://monitordolarvenezuela.com/api-dolar-venezuela
 
 curl http://localhost:4000/api-usage
 
+### reset
+#### manual
+// Reset to a specific value (e.g., 1 to match Coinranking showing 4999 remaining)
+redis-cli set api-usage-monthly 1
+
+// Verify the reset
+curl http://localhost:4000/api-usage
+
+#### using endpoint
+// Reset to a specific value
+curl -X POST http://localhost:4000/api-usage/reset \
+  -H "Content-Type: application/json" \
+  -d '{"value": 1}'
+
+// Reset to 0 (if you want to start fresh)
+curl -X POST http://localhost:4000/api-usage/reset \
+  -H "Content-Type: application/json" \
+  -d '{}'
+  
 ### USDC Price in USD
 ❯ curl -H "x-access-token: x" "https://api.coinranking.com/v2/coin/aKzUVe4Hh_CON/price" | jq '.'
 
