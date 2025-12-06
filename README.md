@@ -67,3 +67,7 @@ Response:
   }
 }
 ```
+
+curl http://localhost:4000/api-usage
+curl http://localhost:4000/price\?token\=USDC\&fiat\=NGN\&source\=binance\&type\=BUY
+curl http://localhost:4000/price\?token\=USDC\&fiat\=VES
